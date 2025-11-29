@@ -1,21 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Book, ChevronLeft, ChevronRight, Download, Calendar, Cloud, CloudOff, Loader, Users, Send } from 'lucide-react';
-import { signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
-import { doc, setDoc, collection, onSnapshot, writeBatch, query, where } from 'firebase/firestore';
+import { Book, ChevronLeft, ChevronRight, Download, Calendar, Cloud, CloudOff, Loader, Users } from 'lucide-react';
+import { signInAnonymously, onAuthStateChanged, signInWithCustomToken, signOut } from 'firebase/auth';
+import { doc, setDoc, collection, onSnapshot, writeBatch } from 'firebase/firestore';
 import { auth, db, appId } from './firebase';
 import { ALL_PROMPTS, MONTHLY_THEMES } from './data/prompts';
-
-const SHARED_COLLECTION_NAME = 'day_reflections'; // Public path collection
+import AuthScreen from './components/AuthScreen';
 
 export default function JournalApp() {
   const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [currentDay, setCurrentDay] = useState(1);
   const [entries, setEntries] = useState({}); // Private entries
   const [saveStatus, setSaveStatus] = useState('idle'); // Status for private entry
-  
-  const [sharedEntryText, setSharedEntryText] = useState(''); // Current user's shared reflection input
-  const [communityReflections, setCommunityReflections] = useState([]); // All shared reflections for the day
-  const [sharedSaveStatus, setSharedSaveStatus] = useState('idle'); // Status for shared entry
   
   const [showSidebar, setShowSidebar] = useState(false); 
 
@@ -26,12 +22,12 @@ export default function JournalApp() {
 
   // 1. Initialize Auth
   useEffect(() => {
-    const initAuth = async () => {
-      // Check for custom token in URL params or similar if needed, otherwise anonymous
-      await signInAnonymously(auth);
-    };
-    initAuth();
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    // Just listen for auth state changes. Login is handled by AuthScreen.
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
   // 2. Load Private Data from Firestore & Migrate LocalStorage if needed
@@ -71,54 +67,8 @@ export default function JournalApp() {
     return () => unsubscribePrivate();
   }, [user]);
   
-  // 3. Load Public Shared Reflections
-  useEffect(() => {
-    if (!user) return;
-    
-    // --- Public Shared Reflections Listener ---
-    const sharedPath = collection(db, 'artifacts', appId, 'public', 'data', SHARED_COLLECTION_NAME);
-    // Query for reflections matching the current day
-    const q = query(
-      sharedPath,
-      where('day', '==', currentDay)
-    );
 
-    const unsubscribePublic = onSnapshot(q, (snapshot) => {
-      const reflections = [];
-      let currentUserReflection = '';
-
-      snapshot.forEach((doc) => {
-        const data = doc.data();
-        if (data.text) {
-          const reflection = {
-            id: doc.id,
-            ...data,
-            // Convert Firestore timestamp to JS Date if it exists
-            createdAt: data.createdAt ? data.createdAt.toDate() : new Date(),
-          };
-          
-          if (data.userId === user.uid) {
-            currentUserReflection = data.text;
-          }
-          reflections.push(reflection);
-        }
-      });
-      
-      // Sort reflections by creation time in memory (Newest first)
-      reflections.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-      setCommunityReflections(reflections);
-      setSharedEntryText(currentUserReflection); // Pre-fill input with user's existing shared entry
-      
-    }, (error) => {
-       console.error("Error fetching shared reflections:", error);
-    });
-
-    return () => unsubscribePublic();
-  }, [user, currentDay]);
-
-
-  // 4. Migration Logic (Runs once if local data is found)
+  // 3. Migration Logic (Runs once if local data is found)
   useEffect(() => {
     if (!user) return;
     
@@ -179,44 +129,15 @@ export default function JournalApp() {
     }, 1500); // Wait 1.5s after typing stops to save
   };
 
-  // 6. Handle Shared Reflection Submission
-  const saveSharedEntry = async (e) => {
-    e.preventDefault();
-    if (!user || sharedEntryText.trim() === '') return;
-
-    setSharedSaveStatus('saving');
-    
-    try {
-      // Use the combination of day and userId as the document ID to ensure only one reflection per user per day
-      const docId = `${currentDay}_${user.uid}`; 
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', SHARED_COLLECTION_NAME, docId);
-      
-      await setDoc(docRef, {
-        day: currentDay,
-        userId: user.uid,
-        text: sharedEntryText.trim(),
-        createdAt: new Date()
-      }, { merge: true }); // Use merge to update existing or create new
-
-      setSharedSaveStatus('saved');
-      // The onSnapshot listener will update the communityReflections state automatically
-    } catch (err) {
-      console.error("Shared Entry Save error", err);
-      setSharedSaveStatus('error');
-    } finally {
-      setTimeout(() => setSharedSaveStatus('idle'), 3000);
-    }
-  };
-
   // Navigate
   const changeDay = (newDay) => {
     if (newDay >= 1 && newDay <= 365) {
       setCurrentDay(newDay);
       localStorage.setItem('pivotYearLastDay', newDay.toString()); // Keep generic UI state local
       window.scrollTo(0, 0);
-      setSharedEntryText(''); // Clear input when changing day
     }
   };
+
 
   const downloadJournal = () => {
     let content = "MY PIVOT YEAR JOURNAL\n\n";
@@ -238,10 +159,20 @@ export default function JournalApp() {
 
   const currentPrompt = ALL_PROMPTS[currentDay - 1];
   const progress = (Object.keys(entries).length / 365) * 100;
-  
-  // Helper to format timestamps
-  const formatTime = (date) => date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
+
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-stone-50 flex items-center justify-center">
+        <Loader size={24} className="animate-spin text-stone-400" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-800 font-serif flex flex-col md:flex-row">
@@ -300,6 +231,13 @@ export default function JournalApp() {
                className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-stone-500 hover:text-stone-900 transition-colors"
              >
                <Download size={14} /> Export Journal
+             </button>
+             
+             <button 
+               onClick={() => signOut(auth)}
+               className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-stone-500 hover:text-red-700 transition-colors mt-4"
+             >
+               <Users size={14} /> Sign Out
              </button>
           </div>
         </div>
@@ -388,72 +326,6 @@ export default function JournalApp() {
                 </span>
               )}
             </div>
-          </div>
-          
-          
-          {/* SHARED REFLECTIONS SECTION */}
-          <div className="mt-16 pt-10 border-t border-stone-200">
-             <h2 className="text-xl font-bold mb-6 text-stone-900 flex items-center gap-2">
-                <Users size={18} className="text-stone-500"/> Shared Reflections (Day {currentDay})
-              </h2>
-              
-              {/* Submission Form */}
-              <form onSubmit={saveSharedEntry} className="mb-8 bg-white p-4 rounded-lg shadow-sm border border-stone-100">
-                <p className="text-sm font-bold text-stone-700 mb-2">Post Your Shared Reflection:</p>
-                <textarea
-                  value={sharedEntryText}
-                  onChange={(e) => setSharedEntryText(e.target.value)}
-                  placeholder="Share a thought, a quote, or a key takeaway for today's theme (visible to your friends)..."
-                  maxLength={500}
-                  className="w-full h-24 p-3 bg-stone-50 border border-stone-200 focus:border-stone-400 focus:ring-0 text-sm resize-none placeholder-stone-400 font-serif outline-none rounded-md transition-colors"
-                />
-                <div className="flex justify-between items-center mt-3">
-                  <span className="text-xs text-stone-400">
-                    {sharedEntryText.length}/500 characters
-                  </span>
-                  <button
-                    type="submit"
-                    disabled={sharedEntryText.trim() === '' || sharedSaveStatus === 'saving'}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-bold rounded-full text-white bg-stone-800 hover:bg-stone-900 disabled:bg-stone-400 transition-colors"
-                  >
-                    {sharedSaveStatus === 'saving' ? (
-                      <>
-                        <Loader size={16} className="animate-spin" /> Sharing...
-                      </>
-                    ) : sharedSaveStatus === 'saved' ? (
-                       <>
-                        <Cloud size={16} /> Shared!
-                      </>
-                    ) : (
-                      <>
-                        <Send size={16} /> Share Reflection
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-
-              {/* Community Feed */}
-              <div className="space-y-4">
-                <h3 className="text-md font-bold text-stone-700 mb-4 border-b border-stone-200 pb-2">Community Feed ({communityReflections.length} Reflections)</h3>
-                {communityReflections.length === 0 ? (
-                  <p className="text-sm text-stone-500 italic p-4 bg-stone-100 rounded-lg">No shared reflections yet for Day {currentDay}. Be the first!</p>
-                ) : (
-                  communityReflections.map((reflection) => (
-                    <div key={reflection.id} className={`p-4 rounded-lg shadow-sm transition-all ${reflection.userId === user.uid ? 'bg-indigo-50 border-indigo-200' : 'bg-white border border-stone-200'}`}>
-                      <p className="text-stone-800 text-base leading-relaxed mb-2 font-serif">{reflection.text}</p>
-                      <div className="text-xs text-stone-500 mt-2 pt-2 border-t border-dashed border-stone-200 flex justify-between">
-                         <span className="font-mono break-all">
-                            {reflection.userId === user.uid ? 'You' : `User ID: ${reflection.userId}`}
-                         </span>
-                         <span>
-                            {reflection.createdAt && formatTime(reflection.createdAt)}
-                         </span>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
           </div>
           
           {/* Footer Quote */}

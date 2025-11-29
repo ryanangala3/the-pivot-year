@@ -17,17 +17,5 @@ service cloud.firestore {
     match /artifacts/{appId}/users/{userId}/journal_entries/{dayDoc} {
       allow read, write: if isOwner(userId);
     }
-
-    // Public Shared Reflections
-    // Path: artifacts/{appId}/public/data/day_reflections/{docId}
-    match /artifacts/{appId}/public/data/day_reflections/{docId} {
-      // Anyone can read shared reflections
-      allow read: if true;
-      
-      // Authenticated users can create/update their own reflections
-      // The docId is constructed as `{day}_{userId}` in the app, but we verify the data fields
-      allow create, update: if isAuthenticated() 
-                            && request.resource.data.userId == request.auth.uid;
-    }
   }
 }
