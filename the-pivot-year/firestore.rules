@@ -1,0 +1,33 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper function to check if user is accessing their own data
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Private Journal Entries
+    // Path: artifacts/{appId}/users/{userId}/journal_entries/{dayDoc}
+    match /artifacts/{appId}/users/{userId}/journal_entries/{dayDoc} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Public Shared Reflections
+    // Path: artifacts/{appId}/public/data/day_reflections/{docId}
+    match /artifacts/{appId}/public/data/day_reflections/{docId} {
+      // Anyone can read shared reflections
+      allow read: if true;
+      
+      // Authenticated users can create/update their own reflections
+      // The docId is constructed as `{day}_{userId}` in the app, but we verify the data fields
+      allow create, update: if isAuthenticated() 
+                            && request.resource.data.userId == request.auth.uid;
+    }
+  }
+}
